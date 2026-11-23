@@ -33,6 +33,7 @@ from app.application.use_cases.analyze_evidence import AnalyzeEvidence, FrameSam
 from app.application.use_cases.embed_texts import EmbedTexts
 from app.application.use_cases.evaluate_conditions import EvaluateConditions
 from app.application.use_cases.reason_about_conditions import ReasonAboutConditions
+from app.application.use_cases.review_protocol import ReviewProtocol
 from app.application.use_cases.synthesize_summary import SynthesizeIncidentSummary
 from app.core.config import Settings
 from app.domain.evidence_reference import Modality
@@ -57,6 +58,7 @@ class Services:
     evaluate: EvaluateConditions | None = None
     reason: ReasonAboutConditions | None = None
     embed: EmbedTexts | None = None
+    review: ReviewProtocol | None = None
 
 
 def build_reasoner(config: Settings) -> Reasoner:
@@ -136,4 +138,5 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
         reason=ReasonAboutConditions(build_reasoner(config),
                                      None if config.provider == "prueba" else load_prompt("reasoning_v1").version),
         embed=EmbedTexts(embeddings),
+        review=ReviewProtocol(model(config.review_model), load_prompt("protocol_review_v1")),
     )
