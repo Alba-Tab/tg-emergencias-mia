@@ -14,17 +14,21 @@ from app.adapters.outbound.providers.openrouter_decisions import OpenRouterDecis
 from app.adapters.outbound.providers.openrouter_model import OpenRouterModel
 from app.adapters.outbound.providers.prueba_decisions import PruebaDecisionModel
 from app.adapters.outbound.providers.prueba_model import PruebaModel
+from app.adapters.outbound.providers.prueba_reasoner import PruebaReasoner
+from app.adapters.outbound.providers.pydantic_ai_reasoner import PydanticAiReasoner
 from app.adapters.outbound.storage.http_evidence_reader import HttpEvidenceReader
 from app.application.pipelines.media import (
     AUDIO_MIME_TYPES, IMAGE_MIME_TYPES, VIDEO_MIME_TYPES, MediaPolicy, SilencePolicy,
 )
 from app.application.ports.media_preparer import MediaPreparer
 from app.application.ports.multimodal_model import MultimodalModel
+from app.application.ports.reasoner import Reasoner
 from app.application.prompts import load_prompt
 from app.application.structured_output import AudioOutput, EvidenceOutput, VideoOutput
 from app.application.ports.decision_model import DecisionModel
 from app.application.use_cases.analyze_evidence import AnalyzeEvidence, FrameSampling, ModalityProfile
 from app.application.use_cases.evaluate_conditions import EvaluateConditions
+from app.application.use_cases.reason_about_conditions import ReasonAboutConditions
 from app.application.use_cases.synthesize_summary import SynthesizeIncidentSummary
 from app.core.config import Settings
 from app.domain.evidence_reference import Modality
@@ -47,6 +51,36 @@ class Services:
     analyze: AnalyzeEvidence
     synthesize: SynthesizeIncidentSummary
     evaluate: EvaluateConditions | None = None
+    reason: ReasonAboutConditions | None = None
+
+
+def build_reasoner(config: Settings) -> Reasoner:
+    """El agente que razona sobre las condiciones en duda. Sus herramientas las sirve el backend por MCP."""
+    if config.provider == "prueba":
+        return PruebaReasoner()
+    # Se importan acá: son las dependencias más pesadas del servicio y con el proveedor de prueba no hacen falta.
+    from pydantic_ai.mcp import MCPToolset
+    from pydantic_ai.models.openrouter import OpenRouterModel
+    from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+    name = config.reasoning_model or config.openrouter_model
+    toolsets = []
+    if config.backend_mcp_url and config.backend_mcp_token:
+        toolsets.append(MCPToolset(
+            config.backend_mcp_url,
+            headers={"Authorization": f"Bearer {config.backend_mcp_token}"},
+            init_timeout=config.backend_mcp_timeout_seconds,
+            read_timeout=config.backend_mcp_timeout_seconds,
+        ))
+    else:
+        logger.warning("Sin AI_BACKEND_MCP_URL y AI_BACKEND_MCP_TOKEN: el razonador trabaja solo con el estado "
+                       "recibido, sin herramientas")
+    return PydanticAiReasoner(
+        OpenRouterModel(name, provider=OpenRouterProvider(api_key=config.openrouter_api_key)),
+        load_prompt("reasoning_v1").text,
+        model_name=name, toolsets=toolsets, max_requests=config.reasoning_max_requests,
+        timeout=config.reasoning_timeout_seconds,
+    )
 
 
 def build_services(config: Settings, client: httpx.AsyncClient) -> Services | None:
@@ -91,4 +125,6 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
         ),
         synthesize=SynthesizeIncidentSummary(model(config.summary_model), load_prompt("summary_v2")),
         evaluate=EvaluateConditions(decisions),
+        reason=ReasonAboutConditions(build_reasoner(config),
+                                     None if config.provider == "prueba" else load_prompt("reasoning_v1").version),
     )
