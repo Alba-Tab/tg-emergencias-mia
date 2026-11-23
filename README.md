@@ -1,6 +1,6 @@
 # Emergencias AI
 
-Microservicio sin estado que analiza evidencias de emergencias (imagen, audio y video), sintetiza el resumen preliminar de un incidente y evalúa las condiciones del protocolo de despacho con un modelo de decisión. El backend Spring conserva la verdad de alertas, incidentes, evidencias, trabajos, resultados y versiones del resumen. Este servicio no guarda nada: recibe una solicitud y devuelve el resultado en la misma respuesta.
+Microservicio sin estado que analiza evidencias de emergencias (imagen, audio y video), sintetiza el resumen preliminar de un incidente, evalúa las condiciones del protocolo de despacho con un modelo de decisión y razona, con herramientas, sobre las que quedan en duda. El backend Spring conserva la verdad de alertas, incidentes, evidencias, trabajos, resultados y versiones del resumen. Este servicio no guarda nada: recibe una solicitud y devuelve el resultado en la misma respuesta.
 
 El análisis es apoyo informativo para el personal. No es un diagnóstico, no es un triaje y no decide el despacho: la evaluación de condiciones devuelve probabilidades, y qué se hace con ellas lo decide el backend con el protocolo de la central.
 
@@ -9,8 +9,8 @@ El análisis es apoyo informativo para el personal. No es un diagnóstico, no es
 | Capa | Contenido |
 |---|---|
 | `domain/` | Resultado de evidencia, resumen de incidente, vocabularios cerrados (`eventType`, `hazards`, `severity`) y reglas: una gravedad sin justificación pasa a `undetermined`; un rango de personas incoherente pasa a desconocido; en el resumen se descartan las citas a fuentes no recibidas y las afirmaciones que se quedan sin ninguna fuente válida, los puntos clave se ordenan y se limitan a cuatro, y un peligro que una evidencia mencionó no desaparece sin una fuente que diga que terminó. |
-| `application/` | `AnalyzeEvidence` (una evidencia), `SynthesizeIncidentSummary` (todas las del incidente), `EvaluateConditions` (las condiciones del protocolo), límites por modalidad (`pipelines/media.py`), esquemas de salida estructurada y los puertos `EvidenceReader`, `MultimodalModel`, `MediaPreparer` y `DecisionModel`. No importa FastAPI ni clientes de proveedores. |
-| `adapters/` | HTTP de entrada, descarga con URL temporal, `OpenRouterModel` (el adaptador de proveedor para las tres modalidades y la síntesis), `PruebaModel` (el analizador de prueba), `OpenRouterDecisionModel` y `PruebaDecisionModel` (el modelo de decisión y su doble de prueba) y `FfmpegPreparer` (`media/ffmpeg_preparer.py`), que mide la duración real con ffprobe, mide el volumen del audio y reduce el video a fotogramas y audio con ffmpeg. |
+| `application/` | `AnalyzeEvidence` (una evidencia), `SynthesizeIncidentSummary` (todas las del incidente), `EvaluateConditions` (las condiciones del protocolo), `ReasonAboutConditions` (las que quedaron en duda), límites por modalidad (`pipelines/media.py`), esquemas de salida estructurada y los puertos `EvidenceReader`, `MultimodalModel`, `MediaPreparer`, `DecisionModel` y `Reasoner`. No importa FastAPI ni clientes de proveedores. |
+| `adapters/` | HTTP de entrada, descarga con URL temporal, `OpenRouterModel` (el adaptador de proveedor para las tres modalidades y la síntesis), `PruebaModel` (el analizador de prueba), `OpenRouterDecisionModel` y `PruebaDecisionModel` (el modelo de decisión y su doble de prueba), `PydanticAiReasoner` y `PruebaReasoner` (el razonador y su doble de prueba) y `FfmpegPreparer` (`media/ffmpeg_preparer.py`), que mide la duración real con ffprobe, mide el volumen del audio y reduce el video a fotogramas y audio con ffmpeg. |
 | `prompts/` | Un archivo por prompt; el nombre del archivo es la versión que se registra en cada resultado (`image-v4`, `audio-v4`, `video-v3` para fotogramas, `video-v4` para el video completo, `summary-v2`). Los archivos de versiones anteriores quedan como historial y ya no se cargan. |
 
 Imagen, audio y video comparten el caso de uso. Cada modalidad solo define sus límites, su prompt, su esquema y, opcionalmente, su modelo (`ModalityProfile`). Para cambiar de proveedor o usar un modelo local se escribe otro adaptador de `MultimodalModel`.
@@ -218,6 +218,57 @@ El modelo es Jev (`AI_DECISION_MODEL`, por defecto `typesafe/jev-1.13`), un mode
 
 Con `AI_PROVIDER=prueba` responde `PruebaDecisionModel`, sin proveedor: da 0,95 a una condición que el estado trae como `"SI"` en `respuestasDelTestigo`, 0,05 a un `"NO"` y 0,5 a cualquier otra. No deduce nada de las evidencias; sirve para probar el flujo completo sin clave ni costo.
 
+### `POST /v1/reasonings`: condiciones en duda
+
+Es el escalón siguiente al modelo de decisión. Cuando una condición queda entre los dos umbrales y ya no hay a quién preguntarle, el backend pide un razonamiento antes de pasarle el asunto a una persona. El razonador es un agente: puede mirar el caso, buscar casos parecidos o leer la norma, y devuelve una conclusión por condición con su porqué.
+
+```json
+{
+  "jobId": "a38ab948-4c3f-43d5-b684-a1898c307a7e",
+  "incidentId": 3,
+  "state": { "...": "el mismo estado del caso que recibe /v1/evaluations" },
+  "questions": [
+    {"code": "PERSONA_ATRAPADA", "statement": "Hay una persona atrapada en un vehículo."}
+  ]
+}
+```
+
+Lleva de 1 a 20 condiciones, con las mismas reglas de código y de tamaño del estado que `/v1/evaluations`.
+
+Respuesta `200`:
+
+```json
+{
+  "jobId": "…", "incidentId": 3, "schemaVersion": "condition-reasoning.v1",
+  "conclusions": [
+    {"code": "PERSONA_ATRAPADA", "verdict": "met",
+     "rationale": "El análisis de la foto describe a un conductor que sigue dentro del auto.",
+     "sources": ["evidencia 12: resumen de la foto"]}
+  ],
+  "toolCalls": ["ver_caso", "buscar_casos_parecidos"],
+  "provenance": {"provider": "openrouter", "model": "…", "promptVersion": "reasoning-v1", "generatedAt": "…", "method": "agent"},
+  "usage": {"inputTokens": 2140, "outputTokens": 180, "requests": 3}
+}
+```
+
+`verdict` es `met` (se cumple), `not_met` (no se cumple) o `unknown` (con lo que hay no se puede saber). Hay una conclusión por cada condición recibida, en el mismo orden. Estas reglas las aplica el código, no el modelo:
+
+- Un `met` o un `not_met` sin justificación o sin ninguna fuente pasa a `unknown`. Sin porqué no se actúa.
+- Una condición que el agente no contestó, o contestó con un veredicto que no existe, queda en `unknown`.
+- Las conclusiones sobre condiciones que nadie pidió se descartan.
+
+Qué se hace con cada conclusión lo decide el backend. Lo que queda en `unknown` va a una persona.
+
+#### El agente y sus herramientas
+
+El agente está hecho con PydanticAI y no guarda nada entre pedidos. El modelo es `AI_REASONING_MODEL` (si falta, `AI_OPENROUTER_MODEL`) por OpenRouter. Sus herramientas no viven acá: las sirve el backend por MCP en `AI_BACKEND_MCP_URL`, y el servicio se presenta con `AI_BACKEND_MCP_TOKEN`. Son las que el backend publique; hoy, ver el caso, ver las unidades, ver los casos abiertos y los traslados próximos, buscar casos parecidos, buscar en la norma, pedirle una respuesta al testigo y proponerle algo al operador. Sin esas dos variables el agente razona solo con el estado recibido.
+
+El backend sirve MCP por HTTP sin estado y contesta siempre con JSON. El cliente prueba primero el protocolo más nuevo (`server/discover`), el backend le responde que no lo conoce y el cliente cae al saludo `initialize` de siempre, con la versión `2025-06-18`. `tests/mcp_backend.py` es un espejo de ese servidor y las pruebas corren el agente de verdad contra él.
+
+Los límites van por código: `AI_REASONING_MAX_REQUESTS` (8) pedidos al modelo como máximo y `AI_REASONING_TIMEOUT_SECONDS` (60) para todo el razonamiento. Si el agente da todas las vueltas sin concluir, la respuesta es `reasoning_limit_exceeded` y no se reintenta. Lo que devuelven las herramientas le llega al modelo como dato, y el prompt (`reasoning-v1`) le indica que no lo tome como instrucción.
+
+Con `AI_PROVIDER=prueba` responde `PruebaReasoner`, sin modelo ni herramientas: `met` para la condición que el estado trae como `"SI"` en `respuestasDelTestigo`, `not_met` para un `"NO"` y `unknown` para el resto.
+
 ### Errores
 
 Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
@@ -225,8 +276,8 @@ Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
 | Estado | Códigos | Qué hace el backend |
 |---|---|---|
 | 401 | `unauthorized` | Revisar el token. |
-| 422 | `invalid_request`, `unsupported_media_type`, `evidence_empty`, `evidence_too_large`, `mime_mismatch`, `checksum_mismatch`, `duration_exceeded`, `unreadable_media`, `object_not_found`, `download_failed`, `invalid_download_url`, `unknown_alert`, `duplicate_source`, `nothing_to_summarize`, `too_many_sources`, `state_too_large` | Fallo definitivo de la evidencia o de la solicitud: no reintentar. |
-| 503 | `download_unavailable`, `download_forbidden` (URL vencida: firmar una nueva), `provider_unavailable`, `invalid_model_output` | Reintentar con espera creciente y un límite de intentos. |
+| 422 | `invalid_request`, `unsupported_media_type`, `evidence_empty`, `evidence_too_large`, `mime_mismatch`, `checksum_mismatch`, `duration_exceeded`, `unreadable_media`, `object_not_found`, `download_failed`, `invalid_download_url`, `unknown_alert`, `duplicate_source`, `nothing_to_summarize`, `too_many_sources`, `state_too_large`, `reasoning_limit_exceeded` | Fallo definitivo de la evidencia o de la solicitud: no reintentar. |
+| 503 | `download_unavailable`, `download_forbidden` (URL vencida: firmar una nueva), `provider_unavailable`, `invalid_model_output`, `tools_unavailable` (el servidor MCP del backend no respondió) | Reintentar con espera creciente y un límite de intentos. |
 | 502 / 503 | `provider_rejected` / `provider_misconfigured`, `service_not_configured` | No reintentar automáticamente; requiere revisión. |
 | 500 | `internal_error` | Reintentar con límite. |
 
