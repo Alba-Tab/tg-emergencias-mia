@@ -7,7 +7,7 @@ la respuesta se valida de nuevo localmente, porque el modo estricto no lo garant
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -171,6 +171,24 @@ class SummaryOutput(_Strict):
             logger.warning("resumen %s: citas inválidas descartadas=%d, afirmaciones sin fuente descartadas=%d",
                            source.incident_id, dropped["citations"], dropped["items"])
         return findings, risks, conflicts
+
+
+ProposalKind = Literal["adjust_threshold", "change_question", "change_response", "add_condition",
+                       "remove_condition", "other"]
+
+
+class ProposalOut(_Strict):
+    kind: ProposalKind
+    eventType: str
+    condition: str | None
+    proposal: str
+    rationale: str
+    factIds: list[str]
+    normIds: list[str]
+
+
+class ProtocolReviewOutput(_Strict):
+    proposals: list[ProposalOut]
 
 
 def json_schema(model: type[BaseModel]) -> dict[str, Any]:
