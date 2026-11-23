@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # La versión va fijada a propósito: los umbrales se ajustaron con ella y hay que volver a medir si cambia.
     decision_model: str = "typesafe/jev-1.13"
     decision_timeout_seconds: float = Field(default=15.0, gt=0)
+    # Razonador: el agente que mira las condiciones que quedaron en duda. Si falta el modelo, usa openrouter_model.
+    reasoning_model: str | None = None
+    # Tiempo total de un razonamiento, con todas sus vueltas, y cuántos pedidos al modelo puede hacer como máximo.
+    reasoning_timeout_seconds: float = Field(default=60.0, gt=0)
+    reasoning_max_requests: int = Field(default=8, ge=2, le=30)
+    # Servidor MCP del backend, de donde el razonador saca sus herramientas, y el token con el que se presenta.
+    # Sin estos dos, el razonador trabaja solo con el estado que recibe.
+    backend_mcp_url: str | None = None
+    backend_mcp_token: str | None = None
+    backend_mcp_timeout_seconds: float = Field(default=15.0, gt=0)
     provider_timeout_seconds: float = 90.0
     download_timeout_seconds: float = 20.0
     max_concurrent_model_calls: int = 4
