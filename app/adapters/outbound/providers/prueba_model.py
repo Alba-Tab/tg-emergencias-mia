@@ -99,6 +99,21 @@ def _sources(text: str) -> dict[str, Any]:
     return document
 
 
+def _protocol_review(text: str) -> dict[str, Any]:
+    """Una propuesta por cada uno de los tres primeros hechos que nombran una condición, citándolo."""
+    try:
+        document = json.loads(text.split("<datos>\n", 1)[1].rsplit("\n</datos>", 1)[0])
+    except (IndexError, ValueError) as exc:
+        raise AiError("invalid_model_output", retryable=True) from exc
+    facts = [fact for fact in document.get("facts") or [] if fact.get("eventType") and fact.get("condition")]
+    return {"proposals": [
+        {"kind": "other", "eventType": fact["eventType"], "condition": fact["condition"],
+         "proposal": "Revisar esta condición con más casos antes de cambiarla.",
+         "rationale": f"Es lo que muestra el hecho {fact['id']}.", "factIds": [fact["id"]], "normIds": []}
+        for fact in facts[:3]
+    ]}
+
+
 def _summary(text: str) -> dict[str, Any]:
     """Cita solo fuentes recibidas: evidencias y alertas con descripción o cantidad."""
     document = _sources(text)
@@ -180,6 +195,8 @@ class PruebaModel:
     ) -> ModelReply:
         if schema_name == "incident_summary":
             content = _summary(text)
+        elif schema_name == "protocol_review":
+            content = _protocol_review(text)
         elif schema_name in _BUILDERS:
             content = _BUILDERS[schema_name](media_parts(media))
         else:
