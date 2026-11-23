@@ -1,16 +1,16 @@
 # Emergencias AI
 
-Microservicio sin estado que analiza evidencias de emergencias (imagen, audio y video) y sintetiza el resumen preliminar de un incidente. El backend Spring conserva la verdad de alertas, incidentes, evidencias, trabajos, resultados y versiones del resumen. Este servicio no guarda nada: recibe una solicitud y devuelve el resultado en la misma respuesta.
+Microservicio sin estado que analiza evidencias de emergencias (imagen, audio y video), sintetiza el resumen preliminar de un incidente y evalúa las condiciones del protocolo de despacho con un modelo de decisión. El backend Spring conserva la verdad de alertas, incidentes, evidencias, trabajos, resultados y versiones del resumen. Este servicio no guarda nada: recibe una solicitud y devuelve el resultado en la misma respuesta.
 
-El análisis es apoyo informativo para el personal. No es un diagnóstico, no es un triaje y no decide el despacho.
+El análisis es apoyo informativo para el personal. No es un diagnóstico, no es un triaje y no decide el despacho: la evaluación de condiciones devuelve probabilidades, y qué se hace con ellas lo decide el backend con el protocolo de la central.
 
 ## Diseño
 
 | Capa | Contenido |
 |---|---|
 | `domain/` | Resultado de evidencia, resumen de incidente, vocabularios cerrados (`eventType`, `hazards`, `severity`) y reglas: una gravedad sin justificación pasa a `undetermined`; un rango de personas incoherente pasa a desconocido; en el resumen se descartan las citas a fuentes no recibidas y las afirmaciones que se quedan sin ninguna fuente válida, los puntos clave se ordenan y se limitan a cuatro, y un peligro que una evidencia mencionó no desaparece sin una fuente que diga que terminó. |
-| `application/` | `AnalyzeEvidence` (una evidencia), `SynthesizeIncidentSummary` (todas las del incidente), límites por modalidad (`pipelines/media.py`), esquemas de salida estructurada y los puertos `EvidenceReader`, `MultimodalModel` y `MediaPreparer`. No importa FastAPI ni clientes de proveedores. |
-| `adapters/` | HTTP de entrada, descarga con URL temporal, `OpenRouterModel` (el adaptador de proveedor para las tres modalidades y la síntesis), `PruebaModel` (el analizador de prueba) y `FfmpegPreparer` (`media/ffmpeg_preparer.py`), que mide la duración real con ffprobe, mide el volumen del audio y reduce el video a fotogramas y audio con ffmpeg. |
+| `application/` | `AnalyzeEvidence` (una evidencia), `SynthesizeIncidentSummary` (todas las del incidente), `EvaluateConditions` (las condiciones del protocolo), límites por modalidad (`pipelines/media.py`), esquemas de salida estructurada y los puertos `EvidenceReader`, `MultimodalModel`, `MediaPreparer` y `DecisionModel`. No importa FastAPI ni clientes de proveedores. |
+| `adapters/` | HTTP de entrada, descarga con URL temporal, `OpenRouterModel` (el adaptador de proveedor para las tres modalidades y la síntesis), `PruebaModel` (el analizador de prueba), `OpenRouterDecisionModel` y `PruebaDecisionModel` (el modelo de decisión y su doble de prueba) y `FfmpegPreparer` (`media/ffmpeg_preparer.py`), que mide la duración real con ffprobe, mide el volumen del audio y reduce el video a fotogramas y audio con ffmpeg. |
 | `prompts/` | Un archivo por prompt; el nombre del archivo es la versión que se registra en cada resultado (`image-v4`, `audio-v4`, `video-v3` para fotogramas, `video-v4` para el video completo, `summary-v2`). Los archivos de versiones anteriores quedan como historial y ya no se cargan. |
 
 Imagen, audio y video comparten el caso de uso. Cada modalidad solo define sus límites, su prompt, su esquema y, opcionalmente, su modelo (`ModalityProfile`). Para cambiar de proveedor o usar un modelo local se escribe otro adaptador de `MultimodalModel`.
@@ -170,6 +170,54 @@ Desde `incident-summary.v2` el resumen agrega tres campos. Los de v1 no cambian 
 - La síntesis no recibe el resumen anterior: depende solo de sus fuentes, así que el orden de llegada no la altera.
 - **Regla para el backend:** guardar la propuesta como nueva versión solo si `usedEvidenceIds` incluye todas las evidencias de la versión vigente y agrega alguna. Una propuesta que llega tarde nunca reemplaza a una más completa.
 
+### `POST /v1/evaluations`: condiciones del incidente
+
+El protocolo de despacho de la central tiene condiciones escritas como frases de sí o no («hay una persona que no respira»). El backend arma el estado del caso, manda las condiciones que todavía no se pueden resolver con una regla y recibe la probabilidad de cada una. Qué hacer con cada probabilidad (actuar, preguntar o pasar el caso a una persona) lo decide el backend con los umbrales del protocolo: este servicio no decide.
+
+```json
+{
+  "jobId": "a38ab948-4c3f-43d5-b684-a1898c307a7e",
+  "incidentId": 3,
+  "state": {
+    "tipoDeSuceso": "CHOQUE",
+    "afectados": 2,
+    "respuestasDelTestigo": {"PERSONA_ATRAPADA": "NO_SE"},
+    "evidencias": [{"resumen": "Dos autos con daños frontales.", "peligros": ["traffic"]}]
+  },
+  "questions": [
+    {"code": "PERSONA_ATRAPADA", "statement": "Hay una persona atrapada en un vehículo."},
+    {"code": "PERSONA_INCONSCIENTE", "statement": "Hay una persona que no responde."}
+  ]
+}
+```
+
+- `state` es un objeto JSON libre y no se interpreta acá: se reenvía al modelo. No debe llevar nombres, teléfonos ni el texto que escribió el testigo, solo datos ya ordenados. Serializado no puede pasar de 60.000 caracteres (`state_too_large`).
+- `questions` lleva de 1 a 50 condiciones con códigos distintos (`[A-Z][A-Z0-9_]{1,59}`) y un enunciado de 3 a 500 caracteres.
+
+Respuesta `200`:
+
+```json
+{
+  "jobId": "…", "incidentId": 3, "schemaVersion": "condition-evaluation.v1",
+  "answers": [
+    {"code": "PERSONA_ATRAPADA", "probability": 0.12},
+    {"code": "PERSONA_INCONSCIENTE", "probability": 0.81}
+  ],
+  "provenance": {"provider": "openrouter", "model": "typesafe/jev-1.13", "generatedAt": "…", "method": "decision_model"},
+  "usage": {"inputTokens": 412, "cost": 0.0004}
+}
+```
+
+`answers` trae una respuesta por cada condición recibida, en el mismo orden; `probability` va de 0 a 1. Si el modelo deja una condición sin responder o devuelve un valor fuera de rango, la respuesta entera se rechaza con `invalid_model_output`.
+
+El modelo es Jev (`AI_DECISION_MODEL`, por defecto `typesafe/jev-1.13`), un modelo de decisión que responde con probabilidades en vez de texto. Se consulta por OpenRouter con la misma clave que el resto, en una sola llamada para todas las condiciones, con `AI_DECISION_TIMEOUT_SECONDS` (15) por intento y hasta dos intentos. Tres cosas a tener en cuenta:
+
+- **La probabilidad no es la probabilidad de acertar.** Los umbrales del protocolo se ajustan midiendo con casos propios, en español, y esa medición vale para una versión del modelo. Por eso la versión va fijada: si se cambia, hay que volver a medir.
+- **No cuenta ni calcula bien.** Las condiciones que dependen de un número (cantidad de afectados, edad) las resuelve el backend con una regla, no se le preguntan al modelo.
+- **Un texto escrito a propósito puede mover la respuesta.** Por eso el estado no lleva texto libre del testigo.
+
+Con `AI_PROVIDER=prueba` responde `PruebaDecisionModel`, sin proveedor: da 0,95 a una condición que el estado trae como `"SI"` en `respuestasDelTestigo`, 0,05 a un `"NO"` y 0,5 a cualquier otra. No deduce nada de las evidencias; sirve para probar el flujo completo sin clave ni costo.
+
 ### Errores
 
 Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
@@ -177,7 +225,7 @@ Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
 | Estado | Códigos | Qué hace el backend |
 |---|---|---|
 | 401 | `unauthorized` | Revisar el token. |
-| 422 | `invalid_request`, `unsupported_media_type`, `evidence_empty`, `evidence_too_large`, `mime_mismatch`, `checksum_mismatch`, `duration_exceeded`, `unreadable_media`, `object_not_found`, `download_failed`, `invalid_download_url`, `unknown_alert`, `duplicate_source`, `nothing_to_summarize`, `too_many_sources` | Fallo definitivo de la evidencia o de la solicitud: no reintentar. |
+| 422 | `invalid_request`, `unsupported_media_type`, `evidence_empty`, `evidence_too_large`, `mime_mismatch`, `checksum_mismatch`, `duration_exceeded`, `unreadable_media`, `object_not_found`, `download_failed`, `invalid_download_url`, `unknown_alert`, `duplicate_source`, `nothing_to_summarize`, `too_many_sources`, `state_too_large` | Fallo definitivo de la evidencia o de la solicitud: no reintentar. |
 | 503 | `download_unavailable`, `download_forbidden` (URL vencida: firmar una nueva), `provider_unavailable`, `invalid_model_output` | Reintentar con espera creciente y un límite de intentos. |
 | 502 / 503 | `provider_rejected` / `provider_misconfigured`, `service_not_configured` | No reintentar automáticamente; requiere revisión. |
 | 500 | `internal_error` | Reintentar con límite. |
