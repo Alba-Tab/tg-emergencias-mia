@@ -10,7 +10,9 @@ from dataclasses import dataclass
 import httpx
 
 from app.adapters.outbound.media.ffmpeg_preparer import FfmpegPreparer
+from app.adapters.outbound.providers.openrouter_decisions import OpenRouterDecisionModel
 from app.adapters.outbound.providers.openrouter_model import OpenRouterModel
+from app.adapters.outbound.providers.prueba_decisions import PruebaDecisionModel
 from app.adapters.outbound.providers.prueba_model import PruebaModel
 from app.adapters.outbound.storage.http_evidence_reader import HttpEvidenceReader
 from app.application.pipelines.media import (
@@ -20,7 +22,9 @@ from app.application.ports.media_preparer import MediaPreparer
 from app.application.ports.multimodal_model import MultimodalModel
 from app.application.prompts import load_prompt
 from app.application.structured_output import AudioOutput, EvidenceOutput, VideoOutput
+from app.application.ports.decision_model import DecisionModel
 from app.application.use_cases.analyze_evidence import AnalyzeEvidence, FrameSampling, ModalityProfile
+from app.application.use_cases.evaluate_conditions import EvaluateConditions
 from app.application.use_cases.synthesize_summary import SynthesizeIncidentSummary
 from app.core.config import Settings
 from app.domain.evidence_reference import Modality
@@ -42,6 +46,7 @@ def build_preparer(config: Settings) -> MediaPreparer | None:
 class Services:
     analyze: AnalyzeEvidence
     synthesize: SynthesizeIncidentSummary
+    evaluate: EvaluateConditions | None = None
 
 
 def build_services(config: Settings, client: httpx.AsyncClient) -> Services | None:
@@ -75,6 +80,9 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
                           config.video_fallback_to_full) if config.video_mode == "frames" else None,
         ),
     }
+    decisions: DecisionModel = PruebaDecisionModel() if config.provider == "prueba" else OpenRouterDecisionModel(
+        config.openrouter_api_key, config.decision_model, client, limiter=limiter,
+        timeout=config.decision_timeout_seconds)
     reader = HttpEvidenceReader(client, timeout=config.download_timeout_seconds)
     return Services(
         analyze=AnalyzeEvidence(
@@ -82,4 +90,5 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
             silence=SilencePolicy(config.silence_max_volume_db, config.silence_min_audible_seconds),
         ),
         synthesize=SynthesizeIncidentSummary(model(config.summary_model), load_prompt("summary_v2")),
+        evaluate=EvaluateConditions(decisions),
     )

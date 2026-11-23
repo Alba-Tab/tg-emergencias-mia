@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     audio_model: str | None = None
     video_model: str | None = None
     summary_model: str | None = None
+    # Modelo de decisión que evalúa las condiciones de un incidente (preguntas de sí o no con probabilidad).
+    # La versión va fijada a propósito: los umbrales se ajustaron con ella y hay que volver a medir si cambia.
+    decision_model: str = "typesafe/jev-1.13"
+    decision_timeout_seconds: float = Field(default=15.0, gt=0)
     provider_timeout_seconds: float = 90.0
     download_timeout_seconds: float = 20.0
     max_concurrent_model_calls: int = 4
