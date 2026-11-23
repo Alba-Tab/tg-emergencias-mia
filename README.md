@@ -269,6 +269,29 @@ Los límites van por código: `AI_REASONING_MAX_REQUESTS` (8) pedidos al modelo 
 
 Con `AI_PROVIDER=prueba` responde `PruebaReasoner`, sin modelo ni herramientas: `met` para la condición que el estado trae como `"SI"` en `respuestasDelTestigo`, `not_met` para un `"NO"` y `unknown` para el resto.
 
+### `POST /v1/embeddings`: textos convertidos en vectores
+
+Convierte cada texto en un vector que representa su significado. El backend los guarda y los compara para buscar por parecido en la norma y en los casos anteriores; acá no se guarda ni se compara nada.
+
+```json
+{"jobId": "…", "texts": ["Hay una persona atrapada en el vehículo", "El paciente no respira"]}
+```
+
+Lleva de 1 a 64 textos, de hasta 8000 caracteres cada uno. Respuesta `200`:
+
+```json
+{
+  "jobId": "…", "schemaVersion": "text-embedding.v1", "dimensions": 1536,
+  "vectors": [[0.012, -0.034, "…"], [0.051, 0.007, "…"]],
+  "provenance": {"provider": "openrouter", "model": "openai/text-embedding-3-small", "generatedAt": "…", "method": "embedding_model"},
+  "usage": {"inputTokens": 17, "cost": 0.0000004}
+}
+```
+
+Hay un vector por texto, en el mismo orden, y todos miden `dimensions`. Dos vectores solo se pueden comparar si salieron del mismo modelo: por eso la respuesta dice cuál fue, y si se cambia `AI_EMBEDDING_MODEL` hay que volver a indexar todo lo guardado.
+
+Con `AI_PROVIDER=prueba` responde `PruebaEmbeddingModel`, sin proveedor: arma el vector con las palabras del texto, así que dos textos quedan cerca solo si comparten palabras. No entiende sinónimos; sirve para probar el flujo completo sin clave ni costo.
+
 ### Errores
 
 Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
