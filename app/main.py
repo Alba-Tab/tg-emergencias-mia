@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from app.adapters.inbound.http import analyses, evaluations, health, reasonings, summaries
+from app.adapters.inbound.http import analyses, embeddings, evaluations, health, reasonings, summaries
 from app.adapters.inbound.http.errors import install_error_handlers
 from app.core.composition import build_services
 from app.core.config import settings
@@ -40,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(summaries.router)
     app.include_router(evaluations.router)
     app.include_router(reasonings.router)
+    app.include_router(embeddings.router)
     return app
 
 

@@ -11,8 +11,10 @@ import httpx
 
 from app.adapters.outbound.media.ffmpeg_preparer import FfmpegPreparer
 from app.adapters.outbound.providers.openrouter_decisions import OpenRouterDecisionModel
+from app.adapters.outbound.providers.openrouter_embeddings import OpenRouterEmbeddingModel
 from app.adapters.outbound.providers.openrouter_model import OpenRouterModel
 from app.adapters.outbound.providers.prueba_decisions import PruebaDecisionModel
+from app.adapters.outbound.providers.prueba_embeddings import PruebaEmbeddingModel
 from app.adapters.outbound.providers.prueba_model import PruebaModel
 from app.adapters.outbound.providers.prueba_reasoner import PruebaReasoner
 from app.adapters.outbound.providers.pydantic_ai_reasoner import PydanticAiReasoner
@@ -26,7 +28,9 @@ from app.application.ports.reasoner import Reasoner
 from app.application.prompts import load_prompt
 from app.application.structured_output import AudioOutput, EvidenceOutput, VideoOutput
 from app.application.ports.decision_model import DecisionModel
+from app.application.ports.embedding_model import EmbeddingModel
 from app.application.use_cases.analyze_evidence import AnalyzeEvidence, FrameSampling, ModalityProfile
+from app.application.use_cases.embed_texts import EmbedTexts
 from app.application.use_cases.evaluate_conditions import EvaluateConditions
 from app.application.use_cases.reason_about_conditions import ReasonAboutConditions
 from app.application.use_cases.synthesize_summary import SynthesizeIncidentSummary
@@ -52,6 +56,7 @@ class Services:
     synthesize: SynthesizeIncidentSummary
     evaluate: EvaluateConditions | None = None
     reason: ReasonAboutConditions | None = None
+    embed: EmbedTexts | None = None
 
 
 def build_reasoner(config: Settings) -> Reasoner:
@@ -117,6 +122,9 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
     decisions: DecisionModel = PruebaDecisionModel() if config.provider == "prueba" else OpenRouterDecisionModel(
         config.openrouter_api_key, config.decision_model, client, limiter=limiter,
         timeout=config.decision_timeout_seconds)
+    embeddings: EmbeddingModel = PruebaEmbeddingModel() if config.provider == "prueba" else OpenRouterEmbeddingModel(
+        config.openrouter_api_key, config.embedding_model, client, limiter=limiter,
+        timeout=config.embedding_timeout_seconds)
     reader = HttpEvidenceReader(client, timeout=config.download_timeout_seconds)
     return Services(
         analyze=AnalyzeEvidence(
@@ -127,4 +135,5 @@ def build_services(config: Settings, client: httpx.AsyncClient) -> Services | No
         evaluate=EvaluateConditions(decisions),
         reason=ReasonAboutConditions(build_reasoner(config),
                                      None if config.provider == "prueba" else load_prompt("reasoning_v1").version),
+        embed=EmbedTexts(embeddings),
     )
