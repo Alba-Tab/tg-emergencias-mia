@@ -4,8 +4,10 @@ Habla el transporte HTTP sin estado y contesta siempre con un JSON, nunca con un
 
 - un pedido (trae `id`) recibe un 200 con su respuesta JSON-RPC;
 - una notificación (sin `id`) recibe un 202 sin cuerpo;
-- un método que no conoce, como `server/discover`, recibe el error -32601: así el cliente cae al saludo
+- un pedido con una versión del protocolo que no habla, como el `server/discover` con que prueba un cliente
+  nuevo, recibe un 400 con el error -32022 y la lista de las que sí habla: así el cliente cae al saludo
   `initialize` de siempre;
+- un método que no conoce recibe el error -32601;
 - GET y DELETE reciben 405, porque no hay flujo ni sesión que abrir o cerrar.
 
 Si el backend cambia cómo responde, este archivo tiene que cambiar igual: es lo que prueba que el cliente del
@@ -71,6 +73,11 @@ class FakeBackend:
         self.versions.append(request.headers.get("mcp-protocol-version"))
         if "id" not in body:
             return Response(status_code=202)
+        version = request.headers.get("mcp-protocol-version")
+        if method != "initialize" and version is not None and version not in SUPPORTED_VERSIONS:
+            return JSONResponse({"jsonrpc": "2.0", "id": body["id"], "error": {
+                "code": -32022, "message": "Versión del protocolo no soportada.",
+                "data": {"supported": list(SUPPORTED_VERSIONS), "requested": version}}}, status_code=400)
         return JSONResponse({"jsonrpc": "2.0", "id": body["id"], **self._answer(method, body.get("params") or {})})
 
     def _answer(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
