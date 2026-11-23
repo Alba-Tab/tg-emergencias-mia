@@ -292,6 +292,43 @@ Hay un vector por texto, en el mismo orden, y todos miden `dimensions`. Dos vect
 
 Con `AI_PROVIDER=prueba` responde `PruebaEmbeddingModel`, sin proveedor: arma el vector con las palabras del texto, así que dos textos quedan cerca solo si comparten palabras. No entiende sinónimos; sirve para probar el flujo completo sin clave ni costo.
 
+### `POST /v1/protocol-reviews`: revisión del protocolo
+
+El analista. Trabaja fuera de cualquier caso: recibe el protocolo vigente, los hechos de cómo funcionó (ya contados por el backend, cada uno con un `id`) y, si hay, extractos de la norma. Devuelve propuestas de mejora para que las lea una persona. No cambia nada.
+
+```json
+{
+  "jobId": "…",
+  "protocol": {"types": [{"code": "DOLOR_PECHO", "name": "Dolor de pecho", "conditions": [{"code": "DOLOR_SIGUE", "statement": "El dolor sigue", "question": "¿El dolor sigue?", "actThreshold": 0.8, "askThreshold": 0.4}]}]},
+  "facts": [{"id": "H1", "eventType": "DOLOR_PECHO", "condition": "DOLOR_SIGUE", "text": "En 14 casos quedó 9 veces en duda y el testigo no contestó en 7."}],
+  "normExcerpts": [{"id": "N1", "citation": "Norma …, Cap. VI, 3.1, p. 65", "text": "…"}]
+}
+```
+
+Respuesta `200`:
+
+```json
+{
+  "jobId": "…", "schemaVersion": "protocol-review.v1",
+  "proposals": [
+    {"kind": "change_question", "eventType": "DOLOR_PECHO", "condition": "DOLOR_SIGUE",
+     "proposal": "Preguntar de forma más directa si el dolor sigue ahora.",
+     "rationale": "La mitad de las veces el testigo no contestó la pregunta actual.",
+     "factIds": ["H1"], "normIds": []}
+  ],
+  "discarded": 0,
+  "provenance": {"provider": "openrouter", "model": "…", "promptVersion": "protocol-review-v1", "generatedAt": "…", "method": "model"}
+}
+```
+
+`kind` es `adjust_threshold`, `change_question`, `change_response`, `add_condition`, `remove_condition` u `other`. Estas reglas las aplica el código, no el modelo, y lo que no las cumple se cuenta en `discarded`:
+
+- El tipo de suceso tiene que estar en el protocolo, y la condición en ese tipo (salvo en `add_condition`, donde tiene que ser nueva o faltar).
+- Una propuesta sin texto, sin porqué o sin ningún hecho recibido que la respalde no pasa.
+- Las citas a hechos o a extractos que no se mandaron se quitan.
+
+Una lista vacía es una respuesta válida: con esos hechos no hay nada que proponer. Con `AI_PROVIDER=prueba` responde `PruebaModel`: una propuesta `other` por cada uno de los tres primeros hechos que nombran una condición.
+
 ### Errores
 
 Todos tienen la forma `{"errorCode": "...", "retryable": true|false}`.
