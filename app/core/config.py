@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     backend_mcp_url: str | None = None
     backend_mcp_token: str | None = None
     backend_mcp_timeout_seconds: float = Field(default=15.0, gt=0)
+    # Modelo que convierte textos en vectores para buscar por parecido (la norma, la memoria de casos). Dos
+    # vectores solo se comparan si salieron del mismo modelo: si se cambia, hay que volver a indexar todo.
+    embedding_model: str = "openai/text-embedding-3-small"
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0)
     provider_timeout_seconds: float = 90.0
     download_timeout_seconds: float = 20.0
     max_concurrent_model_calls: int = 4
